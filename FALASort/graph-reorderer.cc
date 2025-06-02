@@ -32,7 +32,7 @@ int main(int argc, char* argv[]) {
     Graph g = b.MakeGraph();
     g.PrintStats();
     pvector<NodeID> newIds(g.num_nodes(), -1);
-    Graph reordered_g = Builder::degreeCluster(g, (cli.relabel() == 0), newIds, false, true, cli.cutoffFactor());
+    Graph reordered_g = Builder::degreeCluster(g, (cli.relabel() == 0), newIds, false, true, cli.cutoffFactor(), cli.cache_size(), cli.tile_size());
     Writer w(reordered_g);
     w.WriteGraph(cli.out_filename(), cli.out_sg());
   }

@@ -234,23 +234,26 @@ class CLConvert : public CLBase {
   bool out_el_ = false;
   bool out_sg_ = false;
   int cache_size_ = 0;
+  int tile_size_ = 0;
 
  public:
   CLConvert(int argc, char** argv, std::string name)
       : CLBase(argc, argv, name) {
-    get_args_ += "e:b:w:c";
+    get_args_ += "e:b:c:t:w";
     AddHelpLine('b', "file", "output serialized graph to file");
     AddHelpLine('e', "file", "output edge list to file");
-    AddHelpLine('w', "file", "make output weighted");
     AddHelpLine('c', "scale", "the capacity of the on-chip memory (in MB)");
+    AddHelpLine('t', "scale", "the tiling granualrity (in 1K Vertices)");
+    AddHelpLine('w', "file", "make output weighted");    
   }
 
   void HandleArg(signed char opt, char* opt_arg) override {
     switch (opt) {
       case 'b': out_sg_ = true; out_filename_ = std::string(opt_arg);   break;
       case 'e': out_el_ = true; out_filename_ = std::string(opt_arg);   break;
-      case 'w': out_weighted_ = true;                                   break;
       case 'c': cache_size_ = atoi(opt_arg);                            break;
+      case 't': tile_size_ = 1024*atoi(opt_arg);                         break;
+      case 'w': out_weighted_ = true;                                   break;
       default: CLBase::HandleArg(opt, opt_arg);
     }
   }
@@ -260,6 +263,7 @@ class CLConvert : public CLBase {
   bool out_el() const { return out_el_; }
   bool out_sg() const { return out_sg_; }
   int cache_size() const { return cache_size_; }
+  int tile_size() const { return tile_size_; }
 };
 
 #endif  // COMMAND_LINE_H_

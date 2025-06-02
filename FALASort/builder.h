@@ -15,6 +15,7 @@
 #include <cassert>
 #include <vector>
 #include <unordered_set>
+#include <random>
 
 #include "command_line.h"
 #include "generator.h"
@@ -370,7 +371,7 @@ class BuilderBase {
   // DRAM Row Locality Reordering
   static
   CSRGraph<NodeID_, DestID_, invert> degreeCluster(
-      const CSRGraph<NodeID_, DestID_, invert> &g, bool outDegree, pvector<NodeID_> &new_ids, bool createOnlyDegList, bool createBothCSRs, int cutoffFactor) {
+      const CSRGraph<NodeID_, DestID_, invert> &g, bool outDegree, pvector<NodeID_> &new_ids, bool createOnlyDegList, bool createBothCSRs, int cutoffFactor, int cache_size = 2, int tile_size = 8192) {
       Timer t;
       t.Start();
        
@@ -379,50 +380,64 @@ class BuilderBase {
       NodeID_ avgDegree    = g.num_edges_directed() / g.num_nodes();
       NodeID_ degreeCutoff = avgDegree * cutoffFactor;
       NodeID_ hubCount(0);
-      int32_t cache_capacity = cli_.cache_size();
-      if (cache_capacity == 0) {
-        cache_capacity = 4 * 1024 * 1024; // 4MB
+
+      if(cache_size == 0){
+        cache_size = 2; // Default to 2MB if not specified
+      }
+      if(tile_size == 0){
+        tile_size = 8192*1024; // Default to 8M Vertices if not specified
       }
       
       if (g.directed() == true) {
         /* Step I: Create a list of degrees */
-        #pragma omp parallel for reduction(+ : hubCount)
+        #pragma omp parallel for
         for (NodeID_ n=0; n < g.num_nodes(); n++) { 
           // @CS: (degree, node_id)
-          degree_id_pairs[n] = std::make_pair(g.out_degree(n), n);
+          // degree_id_pairs[n] = std::make_pair(g.in_degree(n), n);
           if (outDegree == true) {
-            if (g.out_degree(n) > degreeCutoff) {
-              // @CS: count the number of hub
-              ++hubCount;
-            }
+            degree_id_pairs[n] = std::make_pair(g.out_degree(n), n);
           }
           else {
-            if (g.in_degree(n) > degreeCutoff) {
-              ++hubCount;
-            }
+            degree_id_pairs[n] = std::make_pair(g.in_degree(n), n);
           }
         }
+
+        hubCount = cache_size*1024*1024 / sizeof(NodeID_); // Cache size in MB
+        if (hubCount > g.num_nodes()) {
+          hubCount = g.num_nodes();
+        }
+
+        printf("Cache size: %dMB, hubCount: %d Vertices\n", cache_size, hubCount);
+        printf("Tile size: %d Vertices\n", tile_size);
 
         /* Step II: Sort based on degree order */
         __gnu_parallel::sort(degree_id_pairs.begin(), degree_id_pairs.end(),
                              std::greater<degree_node_p>()); //TODO:Use parallel sort
 
-        /* Step III: assigned remap for the hub vertices */
-        /* In this method, the hub node is gonna assigned in a stride manner to be distributed evenly */
-        NodeID_ hubStride = g.num_nodes() / hubCount;
-        #pragma omp parallel for 
-        for (NodeID_ n=0; n < hubCount; n++) {
-          // @CS: #hubCount nodes from the sorted order are assigned as Node_0 ~ Node_{hubCount-1}
-          NodeID_ new_id = n * hubStride;
-          new_ids[degree_id_pairs[n].second] = new_id;
-          assert(new_id < g.num_nodes()); 
+        if(outDegree == true){
+          printf("Sorting based on OutDegree: max deg. %ld\n", degree_id_pairs[0].first);
         }
-        std::cout << "numNode, hubCount, hubStride: " << g.num_nodes() << ", " << hubCount << "," << hubStride << std::endl;
+        else{
+          printf("Sorting based on InDegree: max deg. %ld\n", degree_id_pairs[0].first);
+        }
+
+        /* Step III: assigned remap for the hub vertices */
+        NodeID_ tile_num = (g.num_nodes() + tile_size - 1) / tile_size;
+        printf("Tile num: %d\n", tile_num);
+
+        #pragma omp parallel for 
+        for(NodeID_ t=0; t < tile_num; t++){
+          for (NodeID_ n=0; n < hubCount; n++) {
+            // @CS: #hubCount nodes from the sorted order are assigned as Node_0 ~ Node_{hubCount-1}
+            new_ids[degree_id_pairs[n + t*hubCount].second] = n + t*tile_size;
+          }
+        }
+        
         
         std::cout << "Step III passed" << std::endl;
-        // @CS: im here 
 
         /* Step IV: assigning remap for (easy) non hub vertices */
+        // new_id X of the vertex N is new_ids[N] = X
         std::vector<bool> taken(g.num_nodes(), false);
 
         for (NodeID_ n = 0; n < g.num_nodes(); ++n) {
@@ -438,18 +453,29 @@ class BuilderBase {
 
         NodeID_ next_id = 0;
         for (NodeID_ n = 0; n < g.num_nodes(); ++n) {
+          // If the ID is already assigned, skip it
           if (new_ids[n] != -1) continue;
 
           // Find next unused ID
           while (taken[next_id]) {
             ++next_id;
             if (next_id >= g.num_nodes()) {
-              std::cerr << "No available IDs left!" << std::endl;
-              abort();
+              next_id = 0;
             }
           }
+
           new_ids[n] = next_id;
           taken[next_id] = true;
+
+
+          // // Use a random device to seed the generator
+          // std::random_device rd;
+          // std::mt19937 gen(rd());  // Mersenne Twister generator
+
+          // // Uniform integer distribution [1, 100]
+          // std::uniform_int_distribution<> int_dist(0, g.num_nodes() - 1);
+          // next_id = int_dist(gen);
+
         }
 
         std::cout << "Step IV passed" << std::endl;
@@ -457,7 +483,6 @@ class BuilderBase {
         
 
         /* Step V: Validation Check */
-        // std::ofstream ofs("debug.log");
         std::unordered_set<NodeID_> seen;
         for (NodeID_ n = 0; n < g.num_nodes(); ++n) {
           if(new_ids[n] == -1 || new_ids[n] >= g.num_nodes()) {
@@ -469,8 +494,6 @@ class BuilderBase {
             std::cerr << "Duplicate remap ID: " << new_ids[n] << std::endl;
             exit(-1);
           }
-          
-          // ofs << "new_ids[" << n << "] = " << new_ids[n] << std::endl;
         }
 
         std::cout << "Step V passed" << std::endl;
@@ -534,7 +557,7 @@ class BuilderBase {
           }
         }
         t.Stop();
-        PrintTime("HubSort time", t.Seconds());
+        PrintTime("FALASort time", t.Seconds());
         if (outDegree == true) {
           return CSRGraph<NodeID_, DestID_, invert>(g.num_nodes(), inv_index, inv_neighs, index, neighs);
         }
@@ -544,6 +567,7 @@ class BuilderBase {
       }
       else {
         /* Undirected graphs - no need to make separate lists for in and out degree */
+        assert(false && "I'm not using undirected graphs yet");
         /* Step I: Create a list of degrees */
         #pragma omp parallel for reduction(+ : hubCount)
         for (NodeID_ n=0; n < g.num_nodes(); n++) { 
