@@ -456,13 +456,13 @@ class BuilderBase {
           }          
         }
 
-        hubCount = cache_size*1024*1024 / sizeof(NodeID_); // Cache size in MB
-        if (hubCount > g.num_nodes()) {
-          hubCount = g.num_nodes();
-        }
+        // hubCount = cache_size*1024*1024 / sizeof(NodeID_); // Cache size in MB
+        // if (hubCount > g.num_nodes()) {
+        //   hubCount = g.num_nodes();
+        // }
 
-        printf("Cache size: %dMB, hubCount: %d Vertices\n", cache_size, hubCount);
-        printf("Tile size: %d Vertices\n", tile_size);
+        // printf("Cache size: %dMB, hubCount: %d Vertices\n", cache_size, hubCount);
+        // printf("Tile size: %d Vertices\n", tile_size);
 
         if(outDegree == true){
           printf("Sorting based on OutDegree: first deg %ld\n", degree_id_pairs[0].first);
@@ -471,22 +471,19 @@ class BuilderBase {
           printf("Sorting based on InDegree: first deg %ld\n", degree_id_pairs[0].first);
         }
 
-        /* Step III: assigned remap for the hub vertices */
-        NodeID_ tile_num = (g.num_nodes() + tile_size - 1) / tile_size;
-        printf("Tile num: %d\n", tile_num);
+        /* Step III: assigned remap for the vertices */
 
-        #pragma omp parallel for 
-        for(NodeID_ t=0; t < tile_num; t++){
-          for (NodeID_ n=0; n < hubCount; n++) {
-            // @CS: #hubCount nodes from the sorted order are assigned as Node_0 ~ Node_{hubCount-1}
-            new_ids[degree_id_pairs[n + t*hubCount].second] = n + t*tile_size;
-          }
+
+        #pragma omp parallel for
+        for(NodeID_ n=0; n < g.num_nodes(); n++) {
+          new_ids[degree_id_pairs[n].second] = n;
         }
-        
+
+
         
         std::cout << "Step III passed" << std::endl;
 
-        /* Step IV: assigning remap for (easy) non hub vertices */
+        /* Step V: Validation Check */
         // new_id X of the vertex N is new_ids[N] = X
         std::vector<bool> taken(g.num_nodes(), false);
 
@@ -500,39 +497,8 @@ class BuilderBase {
             taken[id] = true;
           }
         }
-
-        NodeID_ next_id = 0;
-        for (NodeID_ n = 0; n < g.num_nodes(); ++n) {
-          // If the ID is already assigned, skip it
-          if (new_ids[n] != -1) continue;
-
-          // Find next unused ID
-          while (taken[next_id]) {
-            ++next_id;
-            if (next_id >= g.num_nodes()) {
-              next_id = 0;
-            }
-          }
-
-          new_ids[n] = next_id;
-          taken[next_id] = true;
-
-
-          // // Use a random device to seed the generator
-          // std::random_device rd;
-          // std::mt19937 gen(rd());  // Mersenne Twister generator
-
-          // // Uniform integer distribution [1, 100]
-          // std::uniform_int_distribution<> int_dist(0, g.num_nodes() - 1);
-          // next_id = int_dist(gen);
-
-        }
-
-        std::cout << "Step IV passed" << std::endl;
         
         
-
-        /* Step V: Validation Check */
         std::unordered_set<NodeID_> seen;
         for (NodeID_ n = 0; n < g.num_nodes(); ++n) {
           if(new_ids[n] == -1 || new_ids[n] >= g.num_nodes()) {
